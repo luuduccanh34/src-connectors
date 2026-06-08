@@ -28,7 +28,7 @@ dependencies = [
 ]
 
 [tool.poetry]
-package-mode = true
+# Giữ cấu trúc flat layout để nhận diện các module ngang hàng root
 packages = [
     { include = "src_connectors" },
     { include = "variables" },
@@ -36,7 +36,6 @@ packages = [
 ]
 
 [project.optional-dependencies]
-
 postgres = [
     "psycopg[binary]>=3.2.0,<4.0.0",
     "sqlalchemy>=2.0.0,<3.0.0"
@@ -62,6 +61,16 @@ spark = [
     "pandas>=2.0.0",
     "pyarrow>=14.0.0",
     "numpy>=1.24.0"
+]
+
+# Định nghĩa group 'all' để lệnh cài đặt ban đầu không bị báo WARNING
+all = [
+    "psycopg[binary]>=3.2.0,<4.0.0",
+    "trino>=0.336.0,<1.0.0",
+    "pyodbc==5.3.0",
+    "oracledb>=3.2.0,<4.0.0",
+    "pyspark>=3.5.0,<4.0.0",
+    "sqlalchemy>=2.0.0,<3.0.0"
 ]
 
 dev = [
