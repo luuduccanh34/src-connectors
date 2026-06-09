@@ -1,4 +1,4 @@
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Union
 from pydantic import BaseModel, Field, ConfigDict
 
 from src_connectors.src_spark.configs.base import SparkBaseComponent
@@ -40,7 +40,7 @@ class SparkIcebergConfig(BaseModel, SparkBaseComponent):
         default=_iceberg_defaults.get("SPARK_ICEBERG_SCOPE") or "",
         description="OAuth2 scope for catalog authentication."
     )
-    iceberg_warehouse: str = Field(
+    iceberg_warehouse: Union[str, List[str]] = Field(
         default=_iceberg_defaults.get("SPARK_ICEBERG_WAREHOUSE") or "",
         description="The warehouse location/name used for the Spark SQL catalog prefix."
     )
@@ -81,33 +81,38 @@ class SparkIcebergConfig(BaseModel, SparkBaseComponent):
         Returns:
             Dict[str, Any]: A flat dictionary of Spark configuration properties.
         """
-        # Using iceberg_warehouse as the catalog identifier prefix
-        prefix = f"spark.sql.catalog.{self.iceberg_warehouse}"
         config = {
             "spark.sql.extensions": "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions",
-            prefix: "org.apache.iceberg.spark.SparkCatalog",
         }
 
-        # For non-REST catalogs, type can be used as shorthand (hive, hadoop, etc.)
-        # For REST catalogs, catalog-impl is preferred and setting both causes conflicts.
-        if self.iceberg_catalog_type != "rest":
-            config[f"{prefix}.type"] = self.iceberg_catalog_type
+        # Determine warehouses to configure (handles single string or list)
+        warehouses = [self.iceberg_warehouse] if isinstance(self.iceberg_warehouse, str) else self.iceberg_warehouse
 
-        # Catalog URI and basic I/O settings
-        if self.iceberg_catalog_uri:
-            config[f"{prefix}.uri"] = self.iceberg_catalog_uri
-            config[f"{prefix}.classloader.isolation.enabled"] = "false"
+        for wh in warehouses:
+            # Using warehouse name as the catalog identifier prefix
+            prefix = f"spark.sql.catalog.{wh}"
+            config[prefix] = "org.apache.iceberg.spark.SparkCatalog"
 
-            # Use S3FileIO if S3/MinIO is likely being used
-            if any(s in self.iceberg_warehouse.lower() or s in self.iceberg_catalog_uri.lower() for s in ["s3", "minio"]):
-                config[f"{prefix}.io-impl"] = "org.apache.iceberg.aws.s3.S3FileIO"
+            # For non-REST catalogs, type can be used as shorthand (hive, hadoop, etc.)
+            # For REST catalogs, catalog-impl is preferred and setting both causes conflicts.
+            if self.iceberg_catalog_type != "rest":
+                config[f"{prefix}.type"] = self.iceberg_catalog_type
 
-        if self.iceberg_warehouse:
-            config[f"{prefix}.warehouse"] = self.iceberg_warehouse
+            # Catalog URI and basic I/O settings
+            if self.iceberg_catalog_uri:
+                config[f"{prefix}.uri"] = self.iceberg_catalog_uri
+                config[f"{prefix}.classloader.isolation.enabled"] = "false"
 
-        # REST Catalog specialized authentication settings
-        if self.iceberg_catalog_type == "rest":
-            self._apply_rest_catalog_config(config, prefix)
+                # Use S3FileIO if S3/MinIO is likely being used
+                if any(s in wh.lower() or s in self.iceberg_catalog_uri.lower() for s in ["s3", "minio"]):
+                    config[f"{prefix}.io-impl"] = "org.apache.iceberg.aws.s3.S3FileIO"
+
+            if wh:
+                config[f"{prefix}.warehouse"] = wh
+
+            # REST Catalog specialized authentication settings
+            if self.iceberg_catalog_type == "rest":
+                self._apply_rest_catalog_config(config, prefix)
 
         # Handle Spark Jars and Packages logic: Priority to local jars
         self._apply_dependency_config(config)
