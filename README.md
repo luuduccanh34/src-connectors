@@ -25,6 +25,7 @@ Whether you are fetching a small sample for exploration or streaming billions of
 **Current Support:**
 - **SQL Server**: Robust connectivity via `pyodbc` with support for high-speed batched reads.
 - **Apache Spark**: Modular engine setup supporting **Iceberg** catalogs (Hadoop/REST/S3) and **JDBC** data sources.
+- **Trino**: Fast interactive querying capabilities supporting extraction to DataFrames and lists.
 
 ---
 
@@ -105,9 +106,9 @@ The library is built on a **Modular Connector Pattern**. Every component focuses
 | :--- | :--- | :--- | :--- |
 | `SQLServerConnector` | SQL Server | `pyodbc` | Query & Read |
 | `SparkConnector` | Spark / Iceberg / JDBC | `pyspark` | Query & Big Data Read |
+| `TrinoConnector` | Trino | `trino` | Query & Read |
 | `OracleConnector` | Oracle DB | `oracledb` | *Coming Soon* |
 | `PostgresConnector` | PostgreSQL | `psycopg3` | *Planned* |
-| `TrinoConnector` | Trino | `trino` | *Planned* |
 
 ---
 

@@ -1,7 +1,7 @@
 [project]
 name = "src-connectors"
-version = "0.1.0"
-description = "High-performance data connectors for SQL Server, Spark, Iceberg, and JDBC."
+version = "0.1.1"
+description = "High-performance data connectors for SQL Server, Spark, Iceberg, Trino, and JDBC."
 authors = [
     { name = "canh.ld" }
 ]

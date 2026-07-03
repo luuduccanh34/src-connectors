@@ -1,7 +1,7 @@
 import sys
 from typing import Any
 
-__all__ = ["SQLServerConnector", "SparkConnector"]
+__all__ = ["SQLServerConnector", "SparkConnector", "TrinoConnector"]
 
 
 def __getattr__(name: str) -> Any:
@@ -14,5 +14,10 @@ def __getattr__(name: str) -> Any:
         from src_connectors.src_spark.connector import SparkConnector
 
         return SparkConnector
+
+    if name == "TrinoConnector":
+        from src_connectors.src_trino.connector import TrinoConnector
+
+        return TrinoConnector
 
     raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
