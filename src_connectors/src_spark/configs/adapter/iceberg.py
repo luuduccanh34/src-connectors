@@ -1,10 +1,10 @@
 from typing import Dict, Any, Optional, List, Union
 from pydantic import BaseModel, Field, ConfigDict
 
-from src_connectors.src_spark.configs.base import SparkBaseComponent
+from src_connectors.src_spark.configs.base.base import SparkBaseComponent
 from variables.spark import SparkVariables
 
-# Load environment-based defaults from centralized variables
+# Load environment-based defaults
 _iceberg_defaults = SparkVariables.get_iceberg_config()
 _minio_defaults = SparkVariables.get_minio_config()
 _spark_defaults = SparkVariables.get_spark_base_config()
@@ -14,9 +14,8 @@ class SparkIcebergConfig(BaseModel, SparkBaseComponent):
     """
     Configuration model for Apache Iceberg integration with Spark.
 
-    This class manages Iceberg catalog settings, including connection URIs,
-    authentication credentials, and warehouse locations. It constructs the
-    necessary 'spark.sql.catalog' properties required by the Iceberg Spark runtime.
+    Manages Iceberg catalog settings, connection URIs, authentication,
+    warehouse locations, and adapter-specific dependencies.
     """
     model_config = ConfigDict(extra='allow')
 
@@ -48,13 +47,15 @@ class SparkIcebergConfig(BaseModel, SparkBaseComponent):
         default=_iceberg_defaults.get("SPARK_ICEBERG_VERSION") or "1.4.2",
         description="The Version of Iceberg runtime packages to load."
     )
+
+    # Adapter-specific Dependencies (Đã tách riêng Env vars cho Iceberg)
     spark_jars: Optional[str] = Field(
-        default=_spark_defaults.get("SPARK_LOCAL_JARS") or "",
-        description="Local jar file paths to include in the Spark session."
+        default=_iceberg_defaults.get("SPARK_ICEBERG_LOCAL_JARS") or "",
+        description="Local jar file paths specifically for Iceberg."
     )
     spark_jars_packages: Optional[str] = Field(
-        default=_spark_defaults.get("SPARK_JARS_PACKAGES") or "",
-        description="Override for Spark dependency packages."
+        default=_iceberg_defaults.get("SPARK_ICEBERG_JARS_PACKAGES") or "",
+        description="Maven package coordinates specifically for Iceberg overrides."
     )
 
     # Storage Settings (MinIO / S3)
@@ -73,49 +74,35 @@ class SparkIcebergConfig(BaseModel, SparkBaseComponent):
 
     def get_spark_config(self) -> Dict[str, Any]:
         """
-        Generates Spark configuration for the Iceberg catalog.
-
-        Includes SQL extensions, catalog-specific properties, and Hadoop S3A settings
-        for cloud storage connectivity.
-
-        Returns:
-            Dict[str, Any]: A flat dictionary of Spark configuration properties.
+        Generates Spark configuration for the Iceberg catalog and S3/MinIO storage.
+        Note: JARs and Maven packages are intentionally excluded here to be handled
+        by SparkConnector's dependency resolution step.
         """
         config = {
             "spark.sql.extensions": "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions",
         }
 
-        # Determine warehouses to configure (handles single string or list)
         warehouses = [self.iceberg_warehouse] if isinstance(self.iceberg_warehouse, str) else self.iceberg_warehouse
 
         for wh in warehouses:
-            # Using warehouse name as the catalog identifier prefix
             prefix = f"spark.sql.catalog.{wh}"
             config[prefix] = "org.apache.iceberg.spark.SparkCatalog"
 
-            # For non-REST catalogs, type can be used as shorthand (hive, hadoop, etc.)
-            # For REST catalogs, catalog-impl is preferred and setting both causes conflicts.
             if self.iceberg_catalog_type != "rest":
                 config[f"{prefix}.type"] = self.iceberg_catalog_type
 
-            # Catalog URI and basic I/O settings
             if self.iceberg_catalog_uri:
                 config[f"{prefix}.uri"] = self.iceberg_catalog_uri
                 config[f"{prefix}.classloader.isolation.enabled"] = "false"
 
-                # Use S3FileIO if S3/MinIO is likely being used
                 if any(s in wh.lower() or s in self.iceberg_catalog_uri.lower() for s in ["s3", "minio"]):
                     config[f"{prefix}.io-impl"] = "org.apache.iceberg.aws.s3.S3FileIO"
 
             if wh:
                 config[f"{prefix}.warehouse"] = wh
 
-            # REST Catalog specialized authentication settings
             if self.iceberg_catalog_type == "rest":
                 self._apply_rest_catalog_config(config, prefix)
-
-        # Handle Spark Jars and Packages logic: Priority to local jars
-        self._apply_dependency_config(config)
 
         # Apply Hadoop S3A storage configurations if credentials are provided
         if self.spark_minio_access_key and self.spark_minio_secret_key:
@@ -137,29 +124,8 @@ class SparkIcebergConfig(BaseModel, SparkBaseComponent):
         config[f"{prefix}.token-refresh-enabled"] = "true"
         config[f"{prefix}.token-refresh-min-validity-time"] = "60s"
 
-    def _apply_dependency_config(self, config: Dict[str, Any]) -> None:
-        """Handles the logic for Spark JARs and Packages with local priority."""
-        if self.spark_jars:
-            config["spark.jars"] = self.spark_jars
-        else:
-            if self.spark_jars_packages:
-                config["spark.jars.packages"] = self.spark_jars_packages
-            else:
-                spark_minor_version = _spark_defaults.get("SPARK_MINOR_VERSION", "3.0")
-                config["spark.jars.packages"] = (
-                    f"org.apache.iceberg:iceberg-spark-runtime-{spark_minor_version}_2.12:{self.iceberg_version},"
-                    f"org.apache.iceberg:iceberg-azure-bundle:{self.iceberg_version},"
-                    f"org.apache.iceberg:iceberg-aws-bundle:{self.iceberg_version},"
-                    f"org.apache.iceberg:iceberg-gcp-bundle:{self.iceberg_version}"
-                )
-
     def _get_s3_hadoop_config(self) -> Dict[str, str]:
-        """
-        Generates Hadoop S3A configurations for MinIO/S3 compatible storage.
-
-        Returns:
-            Dict[str, str]: Hadoop filesystem properties.
-        """
+        """Generates Hadoop S3A configurations for MinIO/S3 storage."""
         hadoop_conf = {
             "spark.hadoop.fs.s3a.access.key": self.spark_minio_access_key,
             "spark.hadoop.fs.s3a.secret.key": self.spark_minio_secret_key,
@@ -172,30 +138,22 @@ class SparkIcebergConfig(BaseModel, SparkBaseComponent):
         if self.spark_minio_endpoint:
             hadoop_conf["spark.hadoop.fs.s3a.endpoint"] = self.spark_minio_endpoint
 
-        # When keys are provided, we use the SimpleAWSCredentialsProvider
         hadoop_conf["spark.hadoop.fs.s3a.aws.credentials.provider"] = (
             "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider"
         )
-
-        # Compatibility with libraries using 's3' instead of 's3a'
         hadoop_conf["spark.hadoop.fs.s3.impl"] = "org.apache.hadoop.fs.s3a.S3AFileSystem"
 
         return hadoop_conf
 
     def get_required_spark_packages(self) -> List[str]:
         """
-        Returns a list of required Spark packages for Iceberg.
-
-        Returns:
-            List[str]: A list of Maven coordinates for Iceberg and related bundles.
+        Returns required Maven package coordinates for Iceberg.
+        Uses user-specified packages if provided, otherwise falls back to default Iceberg bundles.
         """
-        if self.spark_jars:
-            return []
-
         if self.spark_jars_packages:
             return [pkg.strip() for pkg in self.spark_jars_packages.split(",") if pkg.strip()]
 
-        # Default Iceberg packages if nothing is provided
+        # Default Iceberg Maven bundles based on spark minor version and iceberg version
         spark_minor_version = _spark_defaults.get("SPARK_MINOR_VERSION", "3.0")
         return [
             f"org.apache.iceberg:iceberg-spark-runtime-{spark_minor_version}_2.12:{self.iceberg_version}",
@@ -203,3 +161,12 @@ class SparkIcebergConfig(BaseModel, SparkBaseComponent):
             f"org.apache.iceberg:iceberg-aws-bundle:{self.iceberg_version}",
             f"org.apache.iceberg:iceberg-gcp-bundle:{self.iceberg_version}"
         ]
+
+    def get_required_local_jars(self) -> List[str]:
+        """
+        Returns local JAR file paths specifically configured for Iceberg.
+        """
+        if not self.spark_jars:
+            return []
+
+        return [jar.strip() for jar in self.spark_jars.split(",") if jar.strip()]

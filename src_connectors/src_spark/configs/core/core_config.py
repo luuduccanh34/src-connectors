@@ -1,7 +1,7 @@
 from typing import Dict, List, Any, Optional
 from pydantic import BaseModel, Field
 
-from src_connectors.src_spark.configs.base import SparkBaseComponent
+from src_connectors.src_spark.configs.base.base import SparkBaseComponent
 from variables.spark import SparkVariables
 
 # Load environment-based defaults
@@ -83,10 +83,9 @@ class SparkCoreConfig(BaseModel, SparkBaseComponent):
 
     def get_spark_config(self) -> Dict[str, Any]:
         """
-        Generates a dictionary of Spark configuration properties.
-
-        Returns:
-            Dict[str, Any]: Flat dictionary of 'spark.*' configuration keys and values.
+        Generates a dictionary of Core Spark configuration properties.
+        Note: JARs and Maven packages are intentionally excluded here to be handled
+        by SparkConnector's dependency resolution step.
         """
         config = {
             "spark.master": self.spark_master,
@@ -99,40 +98,33 @@ class SparkCoreConfig(BaseModel, SparkBaseComponent):
             "spark.local.dir": self.spark_local_dir,
         }
 
-        # Handle Driver Host logic:
-        # Force 127.0.0.1 ONLY if running in local mode to avoid RPC errors on dev machines.
-        # In cluster mode (K8s/YARN), we let Spark/Cluster Manager handle it or use provided host.
+        # Handle Driver Host logic
         is_local = self.spark_master.startswith("local")
         if is_local:
             config["spark.driver.host"] = self.spark_driver_host
             config["spark.driver.bindAddress"] = self.spark_driver_bind_address
         else:
-            # In cluster mode, only apply if explicitly provided (not default 127.0.0.1)
             if self.spark_driver_host != "127.0.0.1":
                 config["spark.driver.host"] = self.spark_driver_host
             if self.spark_driver_bind_address != "127.0.0.1":
                 config["spark.driver.bindAddress"] = self.spark_driver_bind_address
 
-        # Handle Jars and Packages logic priority
-        if self.spark_jars:
-            config["spark.jars"] = self.spark_jars
-        elif self.spark_jars_packages:
-            config["spark.jars.packages"] = self.spark_jars_packages
-
         return config
 
     def get_required_spark_packages(self) -> List[str]:
         """
-        Returns a list of required Spark packages.
-        If local jars are provided, packages are usually skipped to avoid conflicts.
-
-        Returns:
-            List[str]: A list of cleaned Maven package coordinates.
+        Returns a cleaned list of required Maven package coordinates for Core.
         """
-        if self.spark_jars:
-            return []
-
         if not self.spark_jars_packages:
             return []
 
         return [pkg.strip() for pkg in self.spark_jars_packages.split(",") if pkg.strip()]
+
+    def get_required_local_jars(self) -> List[str]:
+        """
+        Returns a cleaned list of local JAR file paths for Core.
+        """
+        if not self.spark_jars:
+            return []
+
+        return [jar.strip() for jar in self.spark_jars.split(",") if jar.strip()]

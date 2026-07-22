@@ -38,6 +38,8 @@ class SparkVariables(BaseConfig):
         "SPARK_ICEBERG_SCOPE",
         "SPARK_ICEBERG_WAREHOUSE",
         "SPARK_ICEBERG_VERSION",
+        "SPARK_ICEBERG_LOCAL_JARS",
+        "SPARK_ICEBERG_JARS_PACKAGES"
     ]
 
     # JDBC Datasource Configuration
@@ -46,6 +48,8 @@ class SparkVariables(BaseConfig):
         "SPARK_JDBC_DRIVER",
         "SPARK_JDBC_USERNAME",
         "SPARK_JDBC_PASSWORD",
+        "SPARK_JDBC_LOCAL_JARS",
+        "SPARK_JDBC_JARS_PACKAGES"
     ]
 
     # Minio and S3 Configuration (used for Iceberg storage)
