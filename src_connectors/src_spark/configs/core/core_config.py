@@ -1,5 +1,5 @@
 from typing import Dict, List, Any, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 
 from src_connectors.src_spark.configs.base.base import SparkBaseComponent
 from variables.spark import SparkVariables
@@ -13,9 +13,12 @@ class SparkCoreConfig(BaseModel, SparkBaseComponent):
     Configuration model for core Apache Spark engine settings.
 
     This class manages Spark core parameters including resource allocation (memory, cores),
-    cluster connectivity, and runtime dependencies. Defaults are initialized from
-    environment variables.
+    cluster connectivity, runtime dependencies, and arbitrary Spark property overrides.
+    Defaults are initialized from environment variables.
     """
+
+    # Enable arbitrary extra fields so users can pass any spark_* properties dynamically
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
 
     # Cluster & Application Settings
     spark_master: str = Field(
@@ -84,16 +87,19 @@ class SparkCoreConfig(BaseModel, SparkBaseComponent):
     def get_spark_config(self) -> Dict[str, Any]:
         """
         Generates a dictionary of Core Spark configuration properties.
+        Automatically includes standard properties and any dynamically passed extra spark_* fields.
+
         Note: JARs and Maven packages are intentionally excluded here to be handled
         by SparkConnector's dependency resolution step.
         """
+        # Baseline Core Configs
         config = {
             "spark.master": self.spark_master,
             "spark.app.name": self.spark_app_name,
-            "spark.executor.memory": self.spark_executor_memory,
-            "spark.executor.cores": self.spark_executor_cores,
-            "spark.driver.memory": self.spark_driver_memory,
-            "spark.driver.cores": self.spark_driver_cores,
+            "spark.executor.memory": str(self.spark_executor_memory),
+            "spark.executor.cores": str(self.spark_executor_cores),
+            "spark.driver.memory": str(self.spark_driver_memory),
+            "spark.driver.cores": str(self.spark_driver_cores),
             "spark.jars.ivy": self.spark_jars_ivy,
             "spark.local.dir": self.spark_local_dir,
         }
@@ -108,6 +114,35 @@ class SparkCoreConfig(BaseModel, SparkBaseComponent):
                 config["spark.driver.host"] = self.spark_driver_host
             if self.spark_driver_bind_address != "127.0.0.1":
                 config["spark.driver.bindAddress"] = self.spark_driver_bind_address
+
+        # Dynamic extra fields handling (e.g. spark_sql_shuffle_partitions -> spark.sql.shuffle.partitions)
+        known_explicit_fields = {
+            "spark_master", "spark_driver_host", "spark_driver_bind_address",
+            "spark_app_name", "spark_executor_memory", "spark_executor_cores",
+            "spark_driver_memory", "spark_driver_cores", "spark_jars",
+            "spark_jars_packages", "spark_jars_ivy", "spark_version",
+            "spark_minor_version", "spark_local_dir"
+        }
+
+        # Dump extra parameters passed at instantiation time
+        extra_fields = getattr(self, "__pydantic_extra__", {}) or {}
+        for k, v in extra_fields.items():
+            if k in known_explicit_fields or v is None:
+                continue
+
+            # Convert key format: spark_sql_shuffle_partitions -> spark.sql.shuffle.partitions
+            if k.startswith("spark_"):
+                key = k.replace("_", ".")
+            elif k.startswith("spark."):
+                key = k
+            else:
+                key = f"spark.{k}"
+
+            # Format boolean as string 'true'/'false'
+            if isinstance(v, bool):
+                config[key] = str(v).lower()
+            else:
+                config[key] = str(v)
 
         return config
 
