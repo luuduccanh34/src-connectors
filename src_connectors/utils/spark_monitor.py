@@ -1,200 +1,213 @@
 """Terminal Progress & Resource Monitor for PySpark Jobs.
 
 Designed for Kubernetes Pods & Jupyter Web Terminals without UI flickering.
-Tracks system resources (CPU, Memory in GB & %) and Spark execution metrics
-(Jobs, Active/Completed/Failed Stages, and Active Executors).
+Features a clean single-line progress indicator during execution and displays
+a persistent, detailed summary report upon pipeline completion.
 """
 
 import time
-from typing import Optional
+from typing import Any, Dict, Optional
 import psutil
 from pyspark.sql import SparkSession
 from rich.console import Console
-from rich.layout import Layout
-from rich.live import Live
 from rich.panel import Panel
 from rich.progress import BarColumn, Progress, SpinnerColumn, TaskID, TextColumn
 from rich.table import Table
-from rich.text import Text
 import structlog
 
 logger = structlog.get_logger(__name__)
 
 
 class PipelineMonitor:
-    """Thread-safe Terminal Dashboard for PySpark ETL Execution Monitoring."""
+    """Thread-safe Terminal Progress Tracker and Summary Reporter for PySpark ETL."""
 
     def __init__(self, app_name: str = "Spark Data Pipeline") -> None:
-        """Initializes console, layout structures, and progress trackers."""
+        """Initializes console and telemetry history trackers.
+
+        Args:
+            app_name: Title of the pipeline.
+        """
         self.console = Console(force_terminal=True, color_system="auto")
         self.app_name = app_name
         self.current_step: str = "Initializing Pipeline..."
         self.start_time: float = time.time()
+        self.end_time: Optional[float] = None
 
+        # Telemetry history for the final persistent summary report
+        self.metrics_history: Dict[str, Any] = {
+            "rows_read": 0,
+            "rows_written": 0,
+            "peak_ram_gb": 0.0,
+            "peak_cpu_pct": 0.0,
+            "total_jobs": 0,
+            "total_stages": 0,
+        }
+
+        # Single-line progress indicator (Prevents multi-frame flickering in Web Terminals)
         self.progress = Progress(
             SpinnerColumn(),
             TextColumn("[bold blue]{task.description}"),
-            BarColumn(bar_width=35),
+            BarColumn(bar_width=30),
             TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
-            TextColumn("• [bold green]{task.completed}/{task.total} tasks"),
             console=self.console,
-            expand=True,
+            transient=True,  # Automatically cleans up execution bar to make room for Summary Table
         )
         self.main_task_id: Optional[TaskID] = None
         self.spark: Optional[SparkSession] = None
 
     def attach_spark(self, spark: SparkSession) -> None:
-        """Attaches active SparkSession to capture execution metrics safely."""
+        """Attaches active SparkSession to capture telemetry.
+
+        Args:
+            spark: Active SparkSession instance.
+        """
         self.spark = spark
 
-    def set_step(self, step_name: str, total_tasks: int = 100) -> None:
-        """Updates active stage description and resets progress bar cleanly."""
-        self.current_step = step_name
+    def start(self) -> None:
+        """Starts the progress tracker timer and renders the live progress bar."""
+        self.start_time = time.time()
+        self.progress.start()
+        self.main_task_id = self.progress.add_task(description=self.current_step, total=100)
 
-        if self.main_task_id is None:
-            self.main_task_id = self.progress.add_task(description=step_name, total=total_tasks)
-        else:
-            self.progress.reset(
+    def set_step(self, step_name: str, completed: int = 0, total: int = 100) -> None:
+        """Updates active step description and progress status.
+
+        Args:
+            step_name: Description of current execution step.
+            completed: Current completed task/unit count.
+            total: Target total task/unit count.
+        """
+        self.current_step = step_name
+        self._record_system_metrics()
+
+        if self.main_task_id is not None:
+            self.progress.update(
                 self.main_task_id,
                 description=step_name,
-                total=total_tasks,
-                completed=0,
+                completed=completed,
+                total=total,
             )
 
     def update_progress(self, completed: int, total: Optional[int] = None) -> None:
-        """Updates progress bar completed counter."""
+        """Updates completed progress counter.
+
+        Args:
+            completed: Incremental or absolute completed unit count.
+            total: Optional total task count override.
+        """
+        self._record_system_metrics()
         if self.main_task_id is not None:
             if total is not None:
                 self.progress.update(self.main_task_id, completed=completed, total=total)
             else:
                 self.progress.update(self.main_task_id, completed=completed)
 
-    def _sync_spark_realtime_tasks(self) -> None:
-        """Query Spark's StatusTracker to sync real active stage tasks automatically."""
-        if not self.spark or self.main_task_id is None:
-            return
-
-        try:
-            tracker = self.spark.sparkContext.statusTracker
-            active_stage_ids = tracker.getActiveStageIds() or []
-
-            if active_stage_ids:
-                total_completed = 0
-                total_tasks = 0
-                for stage_id in active_stage_ids:
-                    stage_info = tracker.getStageInfo(stage_id)
-                    if stage_info:
-                        total_completed += stage_info.numCompletedTasks
-                        total_tasks += stage_info.numTasks
-
-                if total_tasks > 0:
-                    self.progress.update(
-                        self.main_task_id,
-                        completed=total_completed,
-                        total=total_tasks,
-                    )
-        except Exception:
-            pass
-
-    def _generate_layout(self) -> Layout:
-        """Builds composite Rich terminal layout with detailed metrics."""
-        self._sync_spark_realtime_tasks()
-
-        layout = Layout()
-        layout.split_column(
-            Layout(name="header", size=3),
-            Layout(name="body", size=5),
-            Layout(name="footer", size=10),
-        )
-
-        # 1. Top Header Panel
-        elapsed = int(time.time() - self.start_time)
-        header_text = Text(
-            f"🚀 {self.app_name} | Elapsed Time: {elapsed}s",
-            style="bold white on blue",
-            justify="center",
-        )
-        layout["header"].update(Panel(header_text, style="blue"))
-
-        # 2. Middle Progress Bar Panel
-        layout["body"].update(
-            Panel(
-                self.progress,
-                title=f"[bold gold1]Current Pipeline Stage: {self.current_step}[/bold gold1]",
-                border_style="cyan",
-            )
-        )
-
-        # 3. Bottom Resource & Spark Cluster Telemetry Table
-        table = Table(expand=True, show_header=True, header_style="bold magenta")
-        table.add_column("Category", style="dim", width=22)
-        table.add_column("Metric Name", style="cyan")
-        table.add_column("Live Telemetry Value", justify="right", style="bold green")
-
-        # System Resources (RAM / CPU Details)
-        cpu_usage = psutil.cpu_percent()
+    def _record_system_metrics(self) -> None:
+        """Captures peak RAM/CPU usage and Spark execution statistics in background."""
         virtual_mem = psutil.virtual_memory()
         used_ram_gb = virtual_mem.used / (1024**3)
+        cpu_pct = psutil.cpu_percent()
+
+        # Update peak resource metrics
+        if used_ram_gb > self.metrics_history["peak_ram_gb"]:
+            self.metrics_history["peak_ram_gb"] = used_ram_gb
+        if cpu_pct > self.metrics_history["peak_cpu_pct"]:
+            self.metrics_history["peak_cpu_pct"] = cpu_pct
+
+        # Capture Spark Jobs and Stages if active
+        if self.spark:
+            try:
+                tracker = self.spark.sparkContext.statusTracker
+                self.metrics_history["total_jobs"] = len(tracker.getJobIdsForGroup() or [])
+                self.metrics_history["total_stages"] = len(tracker.getActiveStageIds() or [])
+            except Exception:
+                pass
+
+    def record_io_metrics(self, rows_read: int = 0, rows_written: int = 0) -> None:
+        """Records data row volumes for the final summary telemetry.
+
+        Args:
+            rows_read: Number of rows read from source databases.
+            rows_written: Number of rows written to target database/storage.
+        """
+        if rows_read > 0:
+            self.metrics_history["rows_read"] += rows_read
+        if rows_written > 0:
+            self.metrics_history["rows_written"] += rows_written
+
+    def stop_and_show_summary(
+        self,
+        status: str = "SUCCESS",
+        target_table: str = "N/A",
+        details: Optional[str] = None,
+    ) -> None:
+        """Stops progress tracking and displays a persistent Summary Report panel.
+
+        Args:
+            status: Final status ('SUCCESS', 'FAILED', or 'WARNING').
+            target_table: Destination table or path name.
+            details: Optional explanatory notes or error messages.
+        """
+        self.end_time = time.time()
+        self._record_system_metrics()
+        self.progress.stop()
+
+        elapsed = int(self.end_time - self.start_time)
+        status_style = "bold green" if status == "SUCCESS" else "bold red"
+
+        # Construct Persistent Summary Table
+        table = Table(expand=True, show_header=True, header_style="bold magenta")
+        table.add_column("Category", style="dim", width=20)
+        table.add_column("Telemetry Metric", style="cyan")
+        table.add_column("Final Summary Value", justify="right", style="bold yellow")
+
+        # 1. Pipeline Execution Status
+        table.add_row("Execution Info", "Pipeline Name", self.app_name)
+        table.add_row("Execution Info", "Final Status", f"[{status_style}]{status}[/{status_style}]")
+        table.add_row("Execution Info", "Total Duration", f"{elapsed} seconds")
+        table.add_row("Execution Info", "Target Table", target_table)
+
+        # 2. Data Volume Telemetry
+        table.add_row("Data Telemetry", "Source Rows Read", f"{self.metrics_history['rows_read']:,} rows")
+        table.add_row("Data Telemetry", "Target Rows Written", f"{self.metrics_history['rows_written']:,} rows")
+
+        # 3. System & Resource Metrics
+        virtual_mem = psutil.virtual_memory()
         total_ram_gb = virtual_mem.total / (1024**3)
-        ram_percent = virtual_mem.percent
+        ram_pct = (self.metrics_history["peak_ram_gb"] / total_ram_gb) * 100
 
-        table.add_row("Host / Pod System", "CPU Utilization", f"{cpu_usage:.1f}%")
         table.add_row(
-            "Host / Pod System",
-            "RAM Utilization",
-            f"{used_ram_gb:.2f} GB / {total_ram_gb:.2f} GB ({ram_percent:.1f}%)",
+            "Resource Usage",
+            "Peak RAM Utilization",
+            f"{self.metrics_history['peak_ram_gb']:.2f} GB / {total_ram_gb:.2f} GB ({ram_pct:.1f}%)",
         )
+        table.add_row("Resource Usage", "Peak CPU Utilization", f"{self.metrics_history['peak_cpu_pct']:.1f}%")
 
-        # Native Spark Telemetry Details
+        # 4. Spark Engine Details
         if self.spark:
             try:
                 sc = self.spark.sparkContext
-                tracker = sc.statusTracker
 
-                # Jobs & Stages Count
-                active_job_ids = tracker.getJobIdsForGroup() or []
-                active_stage_ids = tracker.getActiveStageIds() or []
-
-                # Calculating Stage statistics (Active / Completed / Total)
-                # Querying status tracker
-                num_active_jobs = len(active_job_ids)
-                num_active_stages = len(active_stage_ids)
-
-                # Executors Count (local mode vs cluster mode)
+                # Active Executors Count
                 try:
-                    # In local mode, Driver acts as Executor (num_executors = 1)
                     num_executors = len(sc._jsc.sc().getExecutorMemoryStatus().keys())
                 except Exception:
                     num_executors = 1
 
-                table.add_row("Spark Engine", "App ID / Master", f"{sc.applicationId} [{sc.master}]")
-                table.add_row("Spark Engine", "Active Executors", f"{num_executors} Worker(s)")
-                table.add_row("Spark Engine", "Active Jobs", f"{num_active_jobs} Running")
-                table.add_row("Spark Engine", "Active Stages", f"{num_active_stages} Active Stage(s)")
+                table.add_row("Spark Engine", "Application ID", sc.applicationId)
+                table.add_row("Spark Engine", "Master Mode", sc.master)
+                table.add_row("Spark Engine", "Executors Count", f"{num_executors} Worker(s)")
+            except Exception:
+                pass
 
-            except Exception as e:
-                table.add_row("Spark Engine", "Status Tracker", f"Active (Telemetry Degraded: {e})")
-        else:
-            table.add_row("Spark Engine", "Engine Status", "Initializing...")
+        if details:
+            table.add_row("Additional Notes", "Details", details)
 
-        layout["footer"].update(
-            Panel(
-                table,
-                title="[bold green]Live System Resources & Spark Cluster Telemetry[/bold green]",
-                border_style="green",
-            )
+        panel = Panel(
+            table,
+            title=f"[{status_style}]📊 PIPELINE EXECUTION SUMMARY REPORT[/{status_style}]",
+            border_style="green" if status == "SUCCESS" else "red",
         )
-
-        return layout
-
-    def start_live_dashboard(self) -> Live:
-        """Returns a clean, thread-safe Live context manager without screen overlaps."""
-        return Live(
-            self._generate_layout(),
-            refresh_per_second=2,
-            console=self.console,
-            redirect_stdout=False,
-            redirect_stderr=False,
-            vertical_overflow="crop",
-            transient=True,
-        )
+        self.console.print("\n")
+        self.console.print(panel)
+        self.console.print("\n")
