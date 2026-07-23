@@ -211,3 +211,4 @@ class PipelineMonitor:
         self.console.print("\n")
         self.console.print(panel)
         self.console.print("\n")
+
