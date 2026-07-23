@@ -29,8 +29,8 @@ class PipelineMonitor:
         Args:
             app_name: Descriptive title for the pipeline dashboard.
         """
-        # Suppress output collision
-        self.console = Console(redirect_stdout=True, redirect_stderr=True)
+        # Standard Console initialization
+        self.console = Console()
         self.app_name = app_name
         self.current_step: str = "Initializing Pipeline..."
         self.start_time: float = time.time()
@@ -115,7 +115,7 @@ class PipelineMonitor:
         table.add_row("Driver Host CPU Utilization", f"{cpu_usage:.1f}%")
         table.add_row("Driver Host RAM Utilization", f"{ram_usage:.1f}%")
 
-        # Native PySpark Status Metrics (Zero Java Proxy Overhead)
+        # Native PySpark Status Metrics
         if self.spark:
             try:
                 status_tracker = self.spark.sparkContext.statusTracker
