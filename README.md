@@ -107,7 +107,7 @@ The library is built on a **Modular Connector Pattern**. Every component focuses
 | `SQLServerConnector` | SQL Server | `pyodbc` | Query & Read |
 | `SparkConnector` | Spark / Iceberg / JDBC | `pyspark` | Query & Big Data Read |
 | `TrinoConnector` | Trino | `trino` | Query & Read |
-| `OracleConnector` | Oracle DB | `oracledb` | *Coming Soon* |
+| `OracleConnector` | Oracle DB | `oracledb` | Query & Read |
 | `PostgresConnector` | PostgreSQL | `psycopg3` | *Planned* |
 
 ---
