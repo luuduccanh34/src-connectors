@@ -1,6 +1,7 @@
 from pathlib import Path
 from typing import Any, Optional, Dict, List, Union, Generator
 from pyspark.sql import SparkSession
+from pyspark.sql import DataFrame
 import structlog
 
 from src_connectors.src_base.connector import BaseConnector
@@ -337,3 +338,37 @@ class SparkConnector(BaseConnector):
 
         # Default: list of dictionaries
         return [dict(zip(columns, row)) for row in rows]
+
+    def write_jdbc_table(
+            self,
+            df: DataFrame,
+            config: SparkJdbcConfig,
+            target_table: str,
+            mode: str = "append",
+            batch_size: int = 5000
+    ) -> None:
+        """
+        Writes a PySpark DataFrame into a target JDBC table using the provided configuration.
+
+        Args:
+            df: The transformed PySpark DataFrame to persist.
+            config: SparkJdbcConfig or SparkOracleConfig instance with connection details.
+            target_table: Destination table name in format 'SCHEMA.TABLE_NAME'.
+            mode: Save mode - 'append', 'overwrite', 'ignore', or 'errorifexists'. Defaults to 'append'.
+            batch_size: Number of records inserted per round-trip to the target DB.
+        """
+        options = config.get_jdbc_options()
+        options["dbtable"] = target_table
+        options["batchsize"] = str(batch_size)
+
+        logger.info(
+            "Writing DataFrame to JDBC target",
+            target_table=target_table,
+            jdbc_url=config.jdbc_url,
+            mode=mode,
+            batch_size=batch_size
+        )
+
+        df.write.format("jdbc").options(**options).mode(mode).save()
+
+        logger.info("Successfully written DataFrame to JDBC target", target_table=target_table)
