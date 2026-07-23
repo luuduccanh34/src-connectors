@@ -55,17 +55,20 @@ class PipelineMonitor:
         self.spark = spark
 
     def set_step(self, step_name: str, total_tasks: int = 100) -> None:
-        """Updates active stage description and resets progress bar.
-
-        Args:
-            step_name: Title/description of current step.
-            total_tasks: Target completed task count.
-        """
+        """Updates active stage description, resets progress bar, and clears terminal line glitched buffers."""
         self.current_step = step_name
+
+        self.console.clear_live()
+
         if self.main_task_id is None:
             self.main_task_id = self.progress.add_task(description=step_name, total=total_tasks)
         else:
-            self.progress.reset(self.main_task_id, description=step_name, total=total_tasks, completed=0)
+            self.progress.reset(
+                self.main_task_id,
+                description=step_name,
+                total=total_tasks,
+                completed=0
+            )
 
     def update_progress(self, completed: int) -> None:
         """Updates progress bar completed counter.
@@ -139,12 +142,13 @@ class PipelineMonitor:
         return layout
 
     def start_live_dashboard(self) -> Live:
-        """Returns configured thread-safe Live context manager for UI rendering."""
+        """Returns a thread-safe Live context manager configured with transient screen clearing."""
         return Live(
             self._generate_layout(),
-            refresh_per_second=2,
+            refresh_per_second=4,
             console=self.console,
             redirect_stdout=True,
             redirect_stderr=True,
-            vertical_overflow="crop",
+            vertical_overflow="visible",
+            transient=False,
         )
